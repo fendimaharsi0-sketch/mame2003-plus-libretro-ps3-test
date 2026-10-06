@@ -34,6 +34,10 @@ jobs:
     timeout-minutes: 180
     container:
       image: reallibretroretroarch/libretro-build-psl1ght:latest
+      # Container jalan sebagai non-root user yang UID-nya beda dengan pemilik
+      # workspace (runner, UID 1001) -> git clone gagal "Permission denied".
+      # Paksa root supaya workspace writable. (run #1, 2026-10-06)
+      options: --user root
 
     steps:
       - name: Toolchain environment
