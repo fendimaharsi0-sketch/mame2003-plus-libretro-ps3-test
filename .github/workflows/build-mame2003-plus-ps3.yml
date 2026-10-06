@@ -1,4 +1,4 @@
-# DRAFT — belum pernah di-run (2026-10-06).
+# DRAFT — run #1 gagal clone (permission), run #2 gagal zip (not found).
 # Diverifikasi dari source, bukan dari template GitLab (gitlab.com ke-block Cloudflare):
 #  - mame2003-plus Makefile: target platform=psl1ght -> mame2003_plus_libretro_psl1ght.a
 #    (CC=$(PS3DEV)/ppu/bin/ppu-$(COMMONLV)gcc, STATIC_LINKING=1, SPLIT_UP_LINK=1)
@@ -98,6 +98,8 @@ jobs:
           ls -la retroarch_psl1ght.self
 
       - name: Package artifact
+        # NOTE: jangan pakai `zip` manual — container tidak punya zip/unzip
+        # (run #2: "zip: not found"). upload-artifact otomatis men-zip saat download.
         run: |
           set -eu
           SELF_NAME='mame2003_plus_libretro_ps3.SELF'
@@ -107,12 +109,12 @@ jobs:
             echo "frontend: libretro/RetroArch @ $(cd frontend && git rev-parse --short HEAD) ($(cd frontend && git log -1 --format=%cd --date=short))"
             echo "built:    $(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } > BUILD_INFO.txt
-          zip -9 -j "${SELF_NAME}.zip" "$SELF_NAME" BUILD_INFO.txt
-          ls -la "${SELF_NAME}.zip"
-          unzip -l "${SELF_NAME}.zip"
+          ls -la "$SELF_NAME" BUILD_INFO.txt
 
       - name: Upload SELF
         uses: actions/upload-artifact@v4
         with:
           name: mame2003_plus_libretro_ps3.SELF
-          path: mame2003_plus_libretro_ps3.SELF.zip
+          path: |
+            mame2003_plus_libretro_ps3.SELF
+            BUILD_INFO.txt
