@@ -1,0 +1,114 @@
+# DRAFT — belum pernah di-run (2026-10-06).
+# Diverifikasi dari source, bukan dari template GitLab (gitlab.com ke-block Cloudflare):
+#  - mame2003-plus Makefile: target platform=psl1ght -> mame2003_plus_libretro_psl1ght.a
+#    (CC=$(PS3DEV)/ppu/bin/ppu-$(COMMONLV)gcc, STATIC_LINKING=1, SPLIT_UP_LINK=1)
+#  - RetroArch master Makefile.psl1ght: link -lretro_psl1ght -> retroarch_psl1ght.self
+#    via ppu_rules (make_self, CEX). Makefile.ps3 sudah tidak ada di master (404).
+#  - Container reallibretroretroarch/libretro-build-psl1ght:latest ada, update 2026-04-24.
+#  - Penamaan artifact ikut buildbot lama: mame2003_plus_libretro_ps3.SELF.zip
+#    (terdaftar di arsip "RetroArch. PS3. CEX. (Last Build)").
+#
+# Asumsi yang di-handle defensif di step "Toolchain environment":
+#  - PS3DEV/PSL1GHT/PORTLIBS belum tentu di-set container -> default layout ps3dev resmi
+#    (PS3DEV=/usr/local/ps3dev, PSL1GHT=$PS3DEV, PORTLIBS=$PSL1GHT/portlibs)
+#  - COMMONLV di-probe: "lv2-" kalau ppu-lv2-gcc ada, kosong kalau cuma ppu-gcc
+# Cek log step itu di run pertama; kalau ada yang MISSING, benerin manual di situ.
+
+name: Build mame2003-plus PS3 SELF
+
+on:
+  workflow_dispatch:
+    inputs:
+      core_ref:
+        description: 'mame2003-plus ref (branch/tag/commit)'
+        default: 'master'
+        required: false
+      frontend_ref:
+        description: 'RetroArch ref to link against'
+        default: 'master'
+        required: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    container:
+      image: reallibretroretroarch/libretro-build-psl1ght:latest
+
+    steps:
+      - name: Toolchain environment
+        run: |
+          set -eu
+          : "${PS3DEV:=/usr/local/ps3dev}"
+          : "${PSL1GHT:=$PS3DEV}"
+          if [ -z "${PORTLIBS:-}" ]; then
+            if [ -d "$PSL1GHT/portlibs" ]; then
+              PORTLIBS="$PSL1GHT/portlibs"
+            elif [ -d "$PS3DEV/portlibs" ]; then
+              PORTLIBS="$PS3DEV/portlibs"
+            else
+              PORTLIBS="$PSL1GHT/portlibs"
+            fi
+          fi
+          if [ -x "$PS3DEV/ppu/bin/ppu-lv2-gcc" ]; then
+            COMMONLV="lv2-"
+          else
+            COMMONLV=""
+          fi
+          {
+            echo "PS3DEV=$PS3DEV"
+            echo "PSL1GHT=$PSL1GHT"
+            echo "PORTLIBS=$PORTLIBS"
+            echo "COMMONLV=$COMMONLV"
+            echo "PATH=$PS3DEV/bin:$PS3DEV/ppu/bin:$PS3DEV/spu/bin:$PATH"
+          } >> "$GITHUB_ENV"
+          echo '--- toolchain probe ---'
+          ls "$PS3DEV/ppu/bin" 2>/dev/null | grep -E '^ppu-.*gcc$' | head -5 || echo 'ppu gcc NOT FOUND'
+          command -v make_self fself ppu-ar 2>/dev/null || echo 'make_self/fself/ppu-ar NOT ALL FOUND'
+          test -f "$PSL1GHT/ppu_rules" && echo 'ppu_rules OK' || echo 'ppu_rules MISSING'
+
+      - name: Clone sources (latest)
+        run: |
+          set -eu
+          command -v git >/dev/null || { apt-get update -qq && apt-get install -y -qq git; }
+          git clone --depth 1 --branch "${{ inputs.core_ref }}" \
+            https://github.com/libretro/mame2003-plus-libretro.git core
+          git clone --depth 1 --branch "${{ inputs.frontend_ref }}" \
+            https://github.com/libretro/RetroArch.git frontend
+          echo "core:     $(cd core && git rev-parse --short HEAD) $(cd core && git log -1 --format=%cd --date=short)"
+          echo "frontend: $(cd frontend && git rev-parse --short HEAD) $(cd frontend && git log -1 --format=%cd --date=short)"
+
+      - name: Build core (static lib)
+        run: |
+          set -eu
+          cd core
+          make -f Makefile platform=psl1ght -j"$(nproc)" V=1 "COMMONLV=$COMMONLV"
+          ls -la mame2003_plus_libretro_psl1ght.a
+
+      - name: Link frontend + core, make SELF
+        run: |
+          set -eu
+          cp core/mame2003_plus_libretro_psl1ght.a frontend/libretro_psl1ght.a
+          cd frontend
+          make -f Makefile.psl1ght -j"$(nproc)" V=1
+          ls -la retroarch_psl1ght.self
+
+      - name: Package artifact
+        run: |
+          set -eu
+          SELF_NAME='mame2003_plus_libretro_ps3.SELF'
+          cp frontend/retroarch_psl1ght.self "$SELF_NAME"
+          {
+            echo "core:     libretro/mame2003-plus-libretro @ $(cd core && git rev-parse --short HEAD) ($(cd core && git log -1 --format=%cd --date=short))"
+            echo "frontend: libretro/RetroArch @ $(cd frontend && git rev-parse --short HEAD) ($(cd frontend && git log -1 --format=%cd --date=short))"
+            echo "built:    $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > BUILD_INFO.txt
+          zip -9 -j "${SELF_NAME}.zip" "$SELF_NAME" BUILD_INFO.txt
+          ls -la "${SELF_NAME}.zip"
+          unzip -l "${SELF_NAME}.zip"
+
+      - name: Upload SELF
+        uses: actions/upload-artifact@v4
+        with:
+          name: mame2003_plus_libretro_ps3.SELF
+          path: mame2003_plus_libretro_ps3.SELF.zip
