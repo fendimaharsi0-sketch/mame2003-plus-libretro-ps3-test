@@ -1,25 +1,48 @@
-## What is MAME 2003-Plus?
-[![pipeline status](https://git.libretro.com/libretro/mame2003-plus-libretro/badges/master/pipeline.svg)](https://git.libretro.com/libretro/mame2003-plus-libretro/-/commits/master)
+# Draft: GitHub Action build mame2003-plus PS3 SELF
 
-MAME 2003-Plus (also referred to as MAME 2003+ and mame2003-plus) is a libretro arcade system emulator core with an emphasis on high performance and broad compatibility with mobile devices, single board computers, embedded systems, and similar platforms.
+Workflow: `build-mame2003-plus-ps3.yml` — **DRAFT, belum pernah di-run.**
 
-In order to take advantage of the performance and lower hardware requirements of an earlier MAME architecture, MAME 2003-Plus began with the MAME 2003 codebase which is itself derived from xmame 0.78. Upon that base, MAME 2003-Plus contributors have backported support for an additional 350 games, as well as other functionality not originally present in the underlying codebase.
+## Cara pakai
+1. Taruh file workflow di `.github/workflows/` repo milik lo
+   (misal fork `libretro/mame2003-plus-libretro`, atau repo build khusus).
+2. GitHub → Actions → "Build mame2003-plus PS3 SELF" → Run workflow.
+   Default: core + frontend RetroArch **master terbaru** (bisa override ref di input).
+3. Download artifact `mame2003_plus_libretro_ps3.SELF.zip`, extract `.SELF`-nya,
+   copy ke folder `cores` di PS3 (sejajar SELF core CE yang lain).
+   CE spawn tiap core sebagai proses standalone via exitspawn — hasil link
+   PSL1GHT (`make_self`, CEX) mestinya jalan di CFW/HEN.
 
-## What games are supported?
-View our [live compatibility table](https://buildbot.libretro.com/compatibility_lists/cores/mame2003-plus/mame2003-plus.html) built using datmagic, a tool created by the MAME 2003-Plus team. Datmagic auto-generates a compatibility table based on the latest XML DAT file. See an incorrect entry? Create a new issue to let us know! This allows us to keep the compatibility table as accurate as possible by fixing it at the source.
+## Alur build (di dalam container `reallibretroretroarch/libretro-build-psl1ght`)
+1. **Probe toolchain** — set `PS3DEV`/`PSL1GHT`/`PORTLIBS`/`COMMONLV` kalau container
+   belum set (default layout ps3dev resmi). Cek log step ini di run pertama.
+2. **Clone** mame2003-plus + RetroArch (depth 1).
+3. **Core**: `make -f Makefile platform=psl1ght` → `mame2003_plus_libretro_psl1ght.a`
+4. **Frontend**: copy `.a` jadi `libretro_psl1ght.a`, `make -f Makefile.psl1ght`
+   → `retroarch_psl1ght.self` (di-sign `make_self` oleh ppu_rules).
+5. **Package**: rename jadi `mame2003_plus_libretro_ps3.SELF` (+ `BUILD_INFO.txt`
+   berisi commit core/frontend), zip, upload artifact.
 
-**Authors:** MAMEdev, MAME 2003-Plus team, et al (see [LICENSE.md](https://raw.githubusercontent.com/libretro/mame2003-plus-libretro/master/LICENSE.md) and [CHANGELOG.md](https://raw.githubusercontent.com/libretro/mame2003-plus-libretro/master/CHANGELOG.md))
+## Yang sudah diverifikasi dari source (2026-10-06)
+- mame2003-plus `Makefile` punya target `platform=psl1ght` (pure C, `CXX` tidak dipakai).
+- RetroArch master masih punya `Makefile.psl1ght` + `griffin/griffin.c`;
+  `Makefile.ps3` (Sony SDK) sudah hilang dari master.
+- psl1ght `ppu_rules`: `%.self: %.elf` pakai `make_self` (CEX) + `fself` (fake).
+- Frontend PSL1GHT default content dir `SSNE10001`, core dir `<port>/cores` —
+  konsisten dengan layout CE.
+- Container image ada di Docker Hub, terakhir update 2026-04-24.
 
-# Documentation
-User documentation for MAME 2003-Plus can be found in the **[libretro core documentation library](https://docs.libretro.com/)**.
+## Yang belum bisa diverifikasi (cek di run pertama)
+- Isi env container (apakah `PS3DEV`/`PSL1GHT` sudah di-set, dan apakah toolchain
+  menyediakan `ppu-gcc` atau `ppu-lv2-gcc`) → ditangani probe step, tapi baca lognya.
+- Template CI resmi libretro (`ci-templates/psl1ght-static.yml`) tidak bisa diakses
+  (gitlab.com ke-block Cloudflare challenge dari sini) — workflow ini rekonstruksi
+  dari Makefile + ppu_rules, bukan salinan template.
+- Build MAME full di runner GitHub (~ribuan file): timeout di-set 180 menit;
+  kalau keok, naikkan `timeout-minutes` atau pakai self-hosted runner.
+- Hasil SELF **belum dites di PS3 asli** — CE pakai frontend Sony SDK 1.9.1-era,
+  sedangkan SELF ini link frontend RetroArch master. Secara arsitektur mestinya
+  aman (proses terpisah, tidak ada ABI boundary), tapi butuh test boot di console.
 
-Developer documentation can be found in **[the MAME 2003-Plus wiki](https://github.com/libretro/mame2003-plus-libretro/wiki)**.
-
-## Development chat
-#programming channel of the [libretro discord chat server](https://discordapp.com/invite/C4amCeV).
-
-## Romsets and how to build them for this core
-
-**mame2003-plus was originally built from the MAME 0.78 codebase, meaning that 95% or more of MAME 0.78 romsets will work as-is in mame2003-plus, where they immediately benefit from its bugfixes and other improvements.** In order to play the new games and games which received ROM updates in mame2003-plus, you will need to find or build the correct romsets.
-
-**[Read more about rebuilding romsets in the libretro core documentation for mame2003-plus](https://docs.libretro.com/library/mame2003_plus/#Building-romsets-for-MAME-2003-Plus)**.
+## Bukan bagian workflow ini
+- Sony SDK tidak bisa masuk CI publik (proprietary) — makanya jalur PSL1GHT.
+- Signing NPDRM / PKG tidak dibuat — cuma SELF mentah buat folder `cores`.
