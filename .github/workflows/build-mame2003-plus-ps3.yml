@@ -183,12 +183,21 @@ jobs:
         # Frontend butuh ikon XMB: <assets>/xmb/<theme>/png/*.png, theme default
         # = monochrome (DEFAULT_XMB_ICON_THEME di config.def.h). Di PS3 assets
         # dibaca dari /dev_hdd0/game/<port_dir>/USRDIR/assets/ (sharing dengan CE).
+        # NOTE: JANGAN `git clone --sparse` langsung — gagal di git container ini
+        # ("failed to initialize sparse-checkout"). Pola aman: clone
+        # --no-checkout -> sparse init -> set -> checkout.
         run: |
           set -eu
-          git clone --depth 1 --filter=blob:none --sparse \
+          rm -rf assets-src
+          git clone --depth 1 --filter=blob:none --no-checkout \
             https://github.com/libretro/retroarch-assets.git assets-src
           cd assets-src
-          git sparse-checkout set xmb/monochrome
+          if git sparse-checkout init --cone 2>/dev/null; then
+            git sparse-checkout set xmb/monochrome
+          else
+            echo 'sparse-checkout tidak didukung git ini -> checkout penuh'
+          fi
+          git checkout
           cd ..
           mkdir -p dist/assets/xmb
           cp -r assets-src/xmb/monochrome dist/assets/xmb/
