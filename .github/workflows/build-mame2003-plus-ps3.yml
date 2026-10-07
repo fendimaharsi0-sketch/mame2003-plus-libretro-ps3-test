@@ -1,4 +1,21 @@
-# DRAFT — run #1 gagal clone (permission), run #2 gagal zip (not found).
+# DRAFT — run #1 gagal clone (permission), run #2 gagal zip (not found),
+# run #3 OK (SELF jadi). Fendi test: menu tanpa aset/ikon.
+# v4: artifact sekarang bundle aset XMB (xmb/monochrome dari retroarch-assets)
+# -> copy ke /dev_hdd0/game/SSNE10001/USRDIR/assets/ di PS3.
+# v5: artifact juga bikin struktur folder game XMB: SSNE10001/{PARAM.SFO,ICON0.PNG,
+# USRDIR/EBOOT.BIN} -> copy ke /dev_hdd0/game/ via FTP, reboot, nongol di XMB.
+# v6 (2026-10-07): masalah terbesar = TIDAK SHARING config dengan CE (kita pakai
+# SSNE10001, CE pakai folder "retroarch"). FIX: EMULATOR_CONTENT_DIR di-patch
+# via sed jadi = folder game CE (input port_dir, default "RETROARCH") -> satu
+# retroarch.cfg, satu assets/, satu savefiles/. Struktur XMB-bubble SSNE10001
+# DIHAPUS (tabrakan EBOOT.BIN dengan CE kalau satu folder).
+# v7 (2026-10-07): CE return-to-menu patch. Core bawaan CE bisa "balik ke
+# frontend" BUKAN karena dynamic-loading, tapi karena tiap SELF me-reboot
+# dirinya sendiri saat unload content (patch RetroArchPatch.sh: UNLOAD_CORE ->
+# RESTART -> exitspawn SELF sendiri -> menu sendiri). Port faithful ke master
+# (anchor disesuaikan: 1.9.1 fall-through, master pakai block). Tanpa ini quit
+# = sysProcessExit -> XMB. Patch config_set_defaults -> RESTART milik CE
+# sengaja TIDAK dibawa (risiko boot loop, tidak dibutuhkan).
 # Diverifikasi dari source, bukan dari template GitLab (gitlab.com ke-block Cloudflare):
 #  - mame2003-plus Makefile: target platform=psl1ght -> mame2003_plus_libretro_psl1ght.a
 #    (CC=$(PS3DEV)/ppu/bin/ppu-$(COMMONLV)gcc, STATIC_LINKING=1, SPLIT_UP_LINK=1)
@@ -26,6 +43,10 @@ on:
       frontend_ref:
         description: 'RetroArch ref to link against'
         default: 'master'
+        required: false
+      port_dir:
+        description: 'Nama folder game PS3 yg di-share dengan CE (port dir)'
+        default: 'RETROARCH'
         required: false
 
 jobs:
@@ -71,16 +92,77 @@ jobs:
           command -v make_self fself ppu-ar 2>/dev/null || echo 'make_self/fself/ppu-ar NOT ALL FOUND'
           test -f "$PSL1GHT/ppu_rules" && echo 'ppu_rules OK' || echo 'ppu_rules MISSING'
 
-      - name: Clone sources (latest)
+      - name: Clone sources
+        # Clone defensif: dukung branch/tag/SHA penuh.
+        # (git clone --branch <SHA> gagal karena SHA bukan ref.)
         run: |
           set -eu
           command -v git >/dev/null || { apt-get update -qq && apt-get install -y -qq git; }
-          git clone --depth 1 --branch "${{ inputs.core_ref }}" \
-            https://github.com/libretro/mame2003-plus-libretro.git core
-          git clone --depth 1 --branch "${{ inputs.frontend_ref }}" \
-            https://github.com/libretro/RetroArch.git frontend
-          echo "core:     $(cd core && git rev-parse --short HEAD) $(cd core && git log -1 --format=%cd --date=short)"
-          echo "frontend: $(cd frontend && git rev-parse --short HEAD) $(cd frontend && git log -1 --format=%cd --date=short)"
+          clone_ref() {
+            local url="$1" dir="$2" ref="$3"
+            rm -rf "$dir"
+            git init -q "$dir"
+            ( cd "$dir" && git remote add origin "$url" \
+              && git fetch -q --depth 1 origin "$ref" \
+              && git checkout -q FETCH_HEAD )
+            echo "$dir: $(cd "$dir" && git rev-parse --short HEAD) $(cd "$dir" && git log -1 --format=%cd --date=short)"
+          }
+          clone_ref https://github.com/libretro/mame2003-plus-libretro.git core "${{ inputs.core_ref }}"
+          clone_ref https://github.com/libretro/RetroArch.git frontend "${{ inputs.frontend_ref }}"
+
+      - name: Align port dir with CE
+        # PROBLEM: SELF kita baca config/aset/save dari /dev_hdd0/game/SSNE10001/USRDIR,
+        # sedangkan CE pakai folder gamenya sendiri -> tidak sharing config.
+        # FIX: samakan EMULATOR_CONTENT_DIR dengan folder game CE, supaya satu
+        # retroarch.cfg, satu assets/, satu savefiles/ untuk semua.
+        # ("RETROARCH" = Title ID PKG CE psx-place v0.4-beta, terverifikasi dari
+        # header PKG: UP0001-RETROARCH_00-0000111122223333. Repo build files
+        # bilang SSNE10000, tapi rilisnya pakai custom ID. Kalau ternyata beda,
+        # ubah via input port_dir tanpa edit file.)
+        run: |
+          set -eu
+          PORT_DIR="${{ inputs.port_dir }}"
+          f=frontend/frontend/drivers/platform_ps3.c
+          grep -q '#define EMULATOR_CONTENT_DIR "SSNE10001"' "$f"
+          sed -i "s/#define EMULATOR_CONTENT_DIR \"SSNE10001\"/#define EMULATOR_CONTENT_DIR \"$PORT_DIR\"/" "$f"
+          grep -n '#define EMULATOR_CONTENT_DIR' "$f"
+
+      - name: Apply CE return-to-menu patch
+        # Kenapa: core bawaan CE bisa "balik ke frontend" karena tiap SELF
+        # me-reboot dirinya sendiri saat unload content (patch RetroArchPatch.sh
+        # milik CE: UNLOAD_CORE -> RESTART). Build master tanpa patch ini:
+        # quit = fork NONE -> sysProcessExit -> mental ke XMB.
+        # Port faithful ke master: anchor disesuaikan (1.9.1 case-nya
+        # fall-through tanpa block, master pakai block { }), posisi & efek
+        # sama: RESTART di awal case, sisa case jadi dead code (by design,
+        # persis seperti hasil patch CE di 1.9.1).
+        # Rantai di master: RESTART -> set_fork(FRONTEND_FORK_RESTART)
+        #   -> (static, tanpa HAVE_DYNAMIC) CMD_EVENT_QUIT -> shutdown
+        #   -> frontend_driver_exitspawn(RARCH_PATH_CORE)
+        #   -> frontend_ps3_exitspawn: fork != NONE -> exitspawn SELF sendiri
+        #   -> reboot -> menu sendiri. RARCH_PATH_CORE = path SELF (di-set dari
+        #   argv[0] di frontend_ps3_process_args).
+        # Patch kedua CE (config_set_defaults -> RESTART) SENGAJA tidak
+        # dibawa: tidak dibutuhkan untuk return-to-menu, risiko boot loop.
+        run: |
+          set -eu
+          python3 - <<'EOF'
+          p = 'frontend/retroarch.c'
+          s = open(p, encoding='utf-8').read()
+          anchor = "      case CMD_EVENT_UNLOAD_CORE:\n         {\n"
+          assert s.count(anchor) == 1, 'anchor count=%d' % s.count(anchor)
+          patch = ("      case CMD_EVENT_UNLOAD_CORE:\n"
+                   "         {\n"
+                   "            /* CE-style return-to-menu (port of CE RetroArchPatch.sh):\n"
+                   "               static core can't truly unload in-process;\n"
+                   "               reboot the SELF into its own menu instead of\n"
+                   "               exiting to XMB. */\n"
+                   "            command_event(CMD_EVENT_RESTART_RETROARCH, NULL);\n"
+                   "            break;\n")
+          open(p, 'w', encoding='utf-8').write(s.replace(anchor, patch))
+          print('return-to-menu patch OK')
+          EOF
+          grep -n -A4 'CE-style return-to-menu' frontend/retroarch.c | head -8
 
       - name: Build core (static lib)
         run: |
@@ -97,24 +179,57 @@ jobs:
           make -f Makefile.psl1ght -j"$(nproc)" V=1
           ls -la retroarch_psl1ght.self
 
+      - name: Fetch menu assets (XMB)
+        # Frontend butuh ikon XMB: <assets>/xmb/<theme>/png/*.png, theme default
+        # = monochrome (DEFAULT_XMB_ICON_THEME di config.def.h). Di PS3 assets
+        # dibaca dari /dev_hdd0/game/<port_dir>/USRDIR/assets/ (sharing dengan CE).
+        run: |
+          set -eu
+          git clone --depth 1 --filter=blob:none --sparse \
+            https://github.com/libretro/retroarch-assets.git assets-src
+          cd assets-src
+          git sparse-checkout set xmb/monochrome
+          cd ..
+          mkdir -p dist/assets/xmb
+          cp -r assets-src/xmb/monochrome dist/assets/xmb/
+          echo "assets commit: $(cd assets-src && git rev-parse --short HEAD)"
+          find dist/assets -type f | wc -l
+          du -sh dist/assets
+
       - name: Package artifact
         # NOTE: jangan pakai `zip` manual — container tidak punya zip/unzip
         # (run #2: "zip: not found"). upload-artifact otomatis men-zip saat download.
+        # NOTE 2: tidak ada lagi struktur XMB-bubble SSNE10001 — port dir sekarang
+        # = folder game CE ("retroarch"), jadi SELF ini HIDUP di dalam CE
+        # (folder cores-nya). Bikin bubble XMB terpisah = tabrakan EBOOT.BIN.
         run: |
           set -eu
           SELF_NAME='mame2003_plus_libretro_ps3.SELF'
-          cp frontend/retroarch_psl1ght.self "$SELF_NAME"
+          PORT_DIR="${{ inputs.port_dir }}"
+          cp frontend/retroarch_psl1ght.self "dist/$SELF_NAME"
           {
             echo "core:     libretro/mame2003-plus-libretro @ $(cd core && git rev-parse --short HEAD) ($(cd core && git log -1 --format=%cd --date=short))"
             echo "frontend: libretro/RetroArch @ $(cd frontend && git rev-parse --short HEAD) ($(cd frontend && git log -1 --format=%cd --date=short))"
+            echo "assets:   libretro/retroarch-assets @ $(cd assets-src && git rev-parse --short HEAD) (xmb/monochrome)"
+            echo "port_dir: $PORT_DIR (sharing config/aset/save dengan CE)"
             echo "built:    $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          } > BUILD_INFO.txt
-          ls -la "$SELF_NAME" BUILD_INFO.txt
+            echo ""
+            echo "INSTALL DI PS3 (via menu CE):"
+            echo "  1. BACKUP dulu /dev_hdd0/game/$PORT_DIR/USRDIR/retroarch.cfg (jaga-jaga)"
+            echo "  2. $SELF_NAME -> /dev_hdd0/game/$PORT_DIR/USRDIR/cores/ (FTP)"
+            echo "  3. aset: CE kemungkinan SUDAH punya assets/ -> cek dulu"
+            echo "     /dev_hdd0/game/$PORT_DIR/USRDIR/assets/xmb/. Kalau kosong,"
+            echo "     copy isi folder assets/ dari paket ini ke sana."
+            echo "  4. Launch dari menu CE seperti core biasa."
+            echo ""
+            echo "CATATAN: config/save sekarang SHARED dengan CE. Frontend kita"
+            echo "lebih baru (master) dari CE (1.9.1-era); kalau ada yang aneh"
+            echo "setelah jalan, restore retroarch.cfg dari backup."
+          } > dist/BUILD_INFO.txt
+          find dist -type f | sort
 
-      - name: Upload SELF
+      - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: mame2003_plus_libretro_ps3.SELF
-          path: |
-            mame2003_plus_libretro_ps3.SELF
-            BUILD_INFO.txt
+          name: mame2003_plus_libretro_ps3
+          path: dist/
